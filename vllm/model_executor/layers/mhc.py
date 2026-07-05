@@ -178,6 +178,38 @@ def mhc_pre_big_fuse_tilelang(
         T.pdl_trigger()
 
 
+def _tf32_hc_prenorm_gemm_fallback(
+    x: torch.Tensor,
+    fn: torch.Tensor,
+    out: torch.Tensor,
+    sqrsum: torch.Tensor,
+    num_split: int,
+) -> None:
+    """Pure PyTorch fallback for tf32_hc_prenorm_gemm when DeepGEMM is unavailable.
+
+    Performs split-K matrix multiply:
+        out[s] = x[:, part_s].float() @ fn[:, part_s].float().T
+        sqrsum[s] = x[:, part_s].float().square().sum(-1)
+    """
+    x_f32 = x.float()
+    fn_f32 = fn.float()
+    K = x.shape[1]
+
+    if num_split == 1:
+        out[0] = x_f32 @ fn_f32.T
+        sqrsum[0] = x_f32.square().sum(-1)
+        return
+
+    k_per_split = K // num_split
+    for s in range(num_split):
+        k_start = s * k_per_split
+        k_end = (s + 1) * k_per_split if s < num_split - 1 else K
+        x_chunk = x_f32[:, k_start:k_end]
+        fn_chunk = fn_f32[:, k_start:k_end]
+        out[s] = x_chunk @ fn_chunk.T
+        sqrsum[s] = x_chunk.square().sum(-1)
+
+
 def mhc_pre(
     residual: torch.Tensor,
     fn: torch.Tensor,
@@ -274,13 +306,22 @@ def mhc_pre(
 
     from vllm.utils.deep_gemm import tf32_hc_prenorm_gemm
 
-    tf32_hc_prenorm_gemm(
-        residual_flat.view(num_tokens, hc_mult * hidden_size),
-        fn_flat,
-        gemm_out_mul,
-        gemm_out_sqrsum,
-        n_splits,
-    )
+    try:
+        tf32_hc_prenorm_gemm(
+            residual_flat.view(num_tokens, hc_mult * hidden_size),
+            fn_flat,
+            gemm_out_mul,
+            gemm_out_sqrsum,
+            n_splits,
+        )
+    except RuntimeError:
+        _tf32_hc_prenorm_gemm_fallback(
+            residual_flat.view(num_tokens, hc_mult * hidden_size),
+            fn_flat,
+            gemm_out_mul,
+            gemm_out_sqrsum,
+            n_splits,
+        )
 
     mhc_pre_big_fuse_tilelang(
         gemm_out_mul,
