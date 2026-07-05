@@ -70,3 +70,43 @@ class KimiKDALayer(nn.Module):
 
         # Reset MHC state so the next DeepSeek layer calls standalone mhc_pre.
         return x_out, None, None, None
+
+
+class DKDecoderLayer(nn.Module):
+    """Dispatch between DeepSeek V4 and Kimi KDA layers by layer index."""
+
+    def __init__(
+        self,
+        vllm_config: VllmConfig,
+        prefix: str,
+        topk_indices_buffer: torch.Tensor | None = None,
+        aux_stream_list: list[torch.cuda.Stream] | None = None,
+    ):
+        super().__init__()
+        from vllm.model_executor.models.utils import extract_layer_index
+        from vllm.models.deepseek_v4.nvidia.model import DeepseekV4DecoderLayer
+
+        config: DKConfig = vllm_config.model_config.hf_config
+        layer_idx = extract_layer_index(prefix)
+
+        self.is_kda = layer_idx in config.kda_layers
+
+        if self.is_kda:
+            self.layer = KimiKDALayer(vllm_config, prefix=prefix)
+        else:
+            self.layer = DeepseekV4DecoderLayer(
+                vllm_config, prefix=prefix,
+                topk_indices_buffer=topk_indices_buffer,
+                aux_stream_list=aux_stream_list,
+            )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        positions: torch.Tensor,
+        input_ids: torch.Tensor | None,
+        post_mix: torch.Tensor | None = None,
+        res_mix: torch.Tensor | None = None,
+        residual: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+        return self.layer(x, positions, input_ids, post_mix, res_mix, residual)
