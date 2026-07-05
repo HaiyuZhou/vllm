@@ -339,6 +339,22 @@ class DeepseekV4ForCausalLMConfig(VerifyAndUpdateConfig):
                 )
 
 
+class DKForCausalLMConfig(VerifyAndUpdateConfig):
+    """Disable calculate_kv_scales for KDA layers, set hybrid flags."""
+
+    @classmethod
+    def verify_and_update_config(cls, vllm_config: "VllmConfig") -> None:
+        from vllm.config.compilation import CUDAGraphMode
+
+        model_config = vllm_config.model_config
+        model_config.hf_config.model_type = "dk"
+        # KDA layers don't use KV cache — disable KV scale computation.
+        model_config.calculate_kv_scales = False
+        # Hybrid model needs piecewise CUDA graphs (skip KDA layers in graph capture).
+        compilation_config = vllm_config.compilation_config
+        compilation_config.cudagraph_mode = CUDAGraphMode.FULL_AND_PIECEWISE
+
+
 class GptOssForCausalLMConfig(VerifyAndUpdateConfig):
     @staticmethod
     def verify_and_update_model_config(model_config: "ModelConfig") -> None:
@@ -814,6 +830,7 @@ MODELS_CONFIG_MAP: dict[str, type[VerifyAndUpdateConfig]] = {
     "ColQwen3_5": ColQwen3_5Config,
     "DeepseekV4ForCausalLM": DeepseekV4ForCausalLMConfig,
     "DeepseekV32ForCausalLM": DeepseekV32ForCausalLM,
+    "DKForCausalLM": DKForCausalLMConfig,
     "DiffusionGemmaForBlockDiffusion": DiffusionGemmaModelForBlockDiffusionConfig,  # noqa: E501
     "Ernie4_5_VLMoeForConditionalGeneration": Ernie4_5_VLMoeForConditionalGenerationConfig,  # noqa: E501
     "FalconMambaForCausalLM": MambaModelConfig,
